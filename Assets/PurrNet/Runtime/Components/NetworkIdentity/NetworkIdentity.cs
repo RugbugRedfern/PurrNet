@@ -588,6 +588,9 @@ namespace PurrNet
 
         private void ClientTick()
         {
+            if(!this)
+                return;
+        
             InternalTick();
 
             try
@@ -615,6 +618,9 @@ namespace PurrNet
 
         private void ServerTick()
         {
+            if(!this)
+                return;
+                
             if (_tickRegisteredClient <= 0)
             {
                 InternalTick();
