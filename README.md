@@ -1,3 +1,6 @@
+## This is a fork of PurrNet to address specific issues we encounter.
+The main PurrNet repository is available [here](https://github.com/PurrNet/PurrNet).
+
 # PurrNet - Unity3D 
 
 <img width="256" height="266" alt="PurrNet_Logo_-_No_BG(2)" src="https://github.com/user-attachments/assets/8aff6704-165e-435e-a5be-8c2b07ca6ad3" /> 
