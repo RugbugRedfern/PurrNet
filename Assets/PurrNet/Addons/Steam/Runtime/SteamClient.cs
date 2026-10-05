@@ -35,6 +35,12 @@ namespace PurrNet.Steam
 #pragma warning restore CS0067 // Event is never used
         public event Action<ConnectionState> onConnectionState;
 
+        /// <summary>
+        /// Why the most recent transition to <see cref="ConnectionState.Disconnected"/> happened.
+        /// Assigned before the state changes so <see cref="onConnectionState"/> subscribers can read it.
+        /// </summary>
+        public DisconnectReason lastDisconnectReason { get; private set; } = DisconnectReason.ClientRequest;
+
         private ConnectionState _state = ConnectionState.Disconnected;
 
         public ConnectionState connectionState
@@ -178,6 +184,7 @@ namespace PurrNet.Steam
         {
             if (_connection == HSteamNetConnection.Invalid)
             {
+                lastDisconnectReason = DisconnectReason.Timeout;
                 connectionState = ConnectionState.Disconnecting;
                 connectionState = ConnectionState.Disconnected;
                 PurrLogger.LogError("Failed to connect to host");
@@ -203,7 +210,12 @@ namespace PurrNet.Steam
                     connectionState = ConnectionState.Connected;
                     break;
                 case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
+                    lastDisconnectReason = DisconnectReason.Timeout;
+                    connectionState = ConnectionState.Disconnecting;
+                    connectionState = ConnectionState.Disconnected;
+                    break;
                 case ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ClosedByPeer:
+                    lastDisconnectReason = DisconnectReason.ServerRequest;
                     connectionState = ConnectionState.Disconnecting;
                     connectionState = ConnectionState.Disconnected;
                     break;
@@ -214,6 +226,8 @@ namespace PurrNet.Steam
         {
             if (_connection != HSteamNetConnection.Invalid)
             {
+                lastDisconnectReason = DisconnectReason.ClientRequest;
+
                 if (connectionState != ConnectionState.Disconnected)
                     connectionState = ConnectionState.Disconnecting;
 

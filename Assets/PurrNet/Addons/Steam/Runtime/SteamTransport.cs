@@ -212,7 +212,7 @@ namespace PurrNet.Steam
                 onConnected?.Invoke(new Connection(0), false);
 
             if (state == ConnectionState.Disconnected)
-                onDisconnected?.Invoke(new Connection(0), DisconnectReason.ClientRequest, false);
+                onDisconnected?.Invoke(new Connection(0), _client.lastDisconnectReason, false);
 
             clientState = state;
         }
