@@ -25,6 +25,12 @@ namespace PurrNet.Modules
         static readonly ProfilerMarker _prepareDeltaMarker = new ProfilerMarker("NetworkTransform.PrepareDeltaState");
 
         private readonly List<NetworkTransform> _networkTransforms = new();
+
+        // PERF: transforms that changed this tick, built once per tick and shared by every
+        // PrepareDeltaState call, instead of re-scanning every transform once per player.
+        // Kept in the same (id-sorted) order as _networkTransforms so the NetworkID delta packing stays small.
+        private readonly List<NetworkTransform> _changed = new();
+
         private readonly ScenePlayersModule _scenePlayers;
         private readonly PlayersBroadcaster _broadcaster;
         private readonly NetworkManager _manager;
@@ -100,35 +106,37 @@ namespace PurrNet.Modules
             return PlayerID.Server;
         }
 
+        /// <summary>
+        /// Writes the deltas from <see cref="_changed"/> that should go to <paramref name="player"/>.
+        /// PERF: only walks the changed list (usually small) rather than every transform in the scene,
+        /// and doesn't call HasChanges() a second time.
+        /// </summary>
         private bool PrepareDeltaState(BitPacker packer, PlayerID player)
         {
             using var _ = _prepareDeltaMarker.Auto();
 
-            var localPlayer = GetLocalPlayer();
-            int ntCount = _networkTransforms.Count;
-            bool anyWritten = false;
-
-            var controlled = ListPool<NetworkTransform>.Instantiate();
-
-            GatherCandidates(player, ntCount, localPlayer, controlled);
+            bool toServer = player == PlayerID.Server;
 
             NetworkID lastNid = default;
-            int count = controlled.Count;
-            var countPos = packer.positionInBits;
-
-            int writtenCount = 0;
             PackedInt lastLen = default;
+            int writtenCount = 0;
+
+            var countPos = packer.positionInBits;
             Packer<int>.Write(packer, 0);
 
             using var tmp = BitPackerPool.Get();
 
-            for (var i = 0; i < count; i++)
+            int changedCount = _changed.Count;
+            for (var i = 0; i < changedCount; i++)
             {
-                var nt = controlled[i];
-                if (!nt.HasChanges())
+                var nt = _changed[i];
+
+                // Same filter the original GatherCandidates used for non-server targets:
+                // don't send a player their own object, and only send what they can see.
+                if (!toServer && (nt.IsControlling(player, false) || !nt.IsObserver(player)))
                     continue;
+
                 nt.DeltaWrite(tmp);
-                anyWritten = true;
 
                 PackedInt length = tmp.positionInBits;
 
@@ -150,39 +158,7 @@ namespace PurrNet.Modules
             Packer<int>.Write(packer, writtenCount);
             packer.SetBitPosition(lastPos);
 
-            ListPool<NetworkTransform>.Destroy(controlled);
-
-            return anyWritten;
-        }
-
-        private void GatherCandidates(PlayerID player, int ntCount, PlayerID localPlayer, List<NetworkTransform> controlled)
-        {
-            if (player == PlayerID.Server)
-            {
-                for (var i = 0; i < ntCount; i++)
-                {
-                    var nt = _networkTransforms[i];
-
-                    if (!nt.IsSpawned(_asServer) || !nt.id.HasValue)
-                        continue;
-
-                    if (nt.IsControlling(localPlayer, false) && nt.HasChanges())
-                        controlled.Add(nt);
-                }
-            }
-            else
-            {
-                for (var i = 0; i < ntCount; i++)
-                {
-                    var nt = _networkTransforms[i];
-
-                    if (!nt.IsSpawned(_asServer) || !nt.id.HasValue)
-                        continue;
-
-                    if (!nt.IsControlling(player, false) && nt.IsObserver(player) && nt.HasChanges())
-                        controlled.Add(nt);
-                }
-            }
+            return writtenCount > 0;
         }
 
         public void Register(NetworkTransform networkTransform)
@@ -220,18 +196,37 @@ namespace PurrNet.Modules
         {
             using var _ = _postFixedUpdateMarker.Auto();
 
-            var localPlayer = GetLocalPlayer();
+            // PERF: when hosting, the client-side copy of this module would only send the host's own
+            // objects to the server running in this same process (a loopback to ourselves). The
+            // server-side copy already gathers and sends everything remote clients need, so skip it.
+            if (!_asServer && _manager.isServer)
+                return;
 
+            var localPlayer = GetLocalPlayer();
             int ntCount = _networkTransforms.Count;
+
+            // PERF: one pass over every transform per tick. Gather state and collect the ones that
+            // changed; everything after this only touches the changed list.
+            _changed.Clear();
 
             _gatherStateMarker.Begin();
             for (var i = 0; i < ntCount; i++)
             {
                 var nt = _networkTransforms[i];
-                if (nt.IsControlling(localPlayer, _asServer))
-                    nt.GatherState();
+
+                if (!nt.IsControlling(localPlayer, _asServer))
+                    continue;
+
+                nt.GatherState();
+
+                if (nt.IsSpawned(_asServer) && nt.id.HasValue && nt.HasChanges())
+                    _changed.Add(nt);
             }
             _gatherStateMarker.End();
+
+            // Nothing moved this tick: nothing to send and nothing to save.
+            if (_changed.Count == 0)
+                return;
 
             if (!_asServer)
             {
@@ -255,12 +250,10 @@ namespace PurrNet.Modules
                 }
             }
 
-            for (var i = 0; i < ntCount; i++)
-            {
-                var nt = _networkTransforms[i];
-                if (nt.IsControlling(localPlayer, _asServer))
-                    nt.DeltaSave();
-            }
+            // Unchanged transforms already have _lastSentDelta == _currentData, so saving only the
+            // changed ones is equivalent to the original loop over every controlled transform.
+            for (var i = 0; i < _changed.Count; i++)
+                _changed[i].DeltaSave();
         }
     }
 }
